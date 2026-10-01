@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Python 3.12: the lockfile is resolved for it, and the gradient-boosting
+      # wheels are not guaranteed on 3.13+ yet.
+      - name: Sync environment
+        run: uv sync --extra dev --extra ml --python 3.12
+
+      # The suite runs entirely against the deterministic mock providers, so it
+      # needs no network access and no market data.
+      - name: Run tests
+        run: uv run --no-sync pytest -q

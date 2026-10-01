@@ -1,0 +1,123 @@
+# =============================================================================
+# SwingML example configuration.
+#
+# Every number that affects a score lives here and nowhere else, so a structural
+# change is always a config diff rather than a hidden constant in the code.
+#
+# The values below are ORDINARY PLACEHOLDERS chosen to make the pipeline run,
+# not recommendations. Anything you keep, change or tune on this file is a
+# hypothesis to be tested, not a setting to be trusted -- which is the entire
+# point of the validation machinery in this repository.
+# =============================================================================
+
+paths:
+  data_dir: data
+  raw_dir: data/raw          # immutable downloaded source files
+  cache_dir: data/cache      # normalised per-symbol / per-date parquet
+  dataset_dir: data/datasets # assembled feature matrices
+
+data:
+  start: "2020-01-01"
+  end: null                  # null = today
+  price_provider: yfinance        # yfinance | mock
+  delivery_provider: nse_bhavcopy # nse_bhavcopy | mock
+  bench_symbol: "^NSEI"      # benchmark used by the regime block
+  max_workers: 6             # polite concurrency against the exchange archive
+  request_delay_sec: 0.35    # throttle; aggressive scraping gets blocked
+  request_timeout_sec: 30
+  max_retries: 4
+
+  # Deterministic offline stand-in used by the test suite and for dry runs.
+  # `--price-provider mock --delivery-provider mock` needs no network at all.
+  mock:
+    n_symbols: 40
+    n_days: 1200
+    seed: 7
+
+universe:
+  # liquidity  -> point-in-time top-N by trailing turnover (survivorship-free)
+  # nifty200   -> official exchange constituent list (convenient, but biased:
+  #               it only contains today's members, so it cannot contain the
+  #               companies that dropped out)
+  # nifty500   -> as above, wider
+  source: liquidity
+  index_name: ""             # required when source is an index list
+  universe_size: 100         # placeholder -- this is a policy choice, not a default
+  symbols: null              # explicit override: list of bare symbols
+  min_price: 50.0            # placeholder floor: penny stocks have wide spreads
+  min_avg_turnover_lacs: 500.0   # placeholder floor; raise it to trade only large caps
+
+features:
+  # Which FeatureProvider builds the matrix. `demo` is the reference provider
+  # shipped in swingml/features/demo.py. A provider of your own can be named as
+  # a "module:Class" dotted path, or registered as an entry point in the
+  # `swingml.features` group -- see swingml/features/registry.py.
+  provider: demo
+  ema_windows: [20, 50, 200]
+  rsi_window: 14
+  roc_windows: [5, 10, 20, 60]
+  atr_window: 14
+  vol_windows: [5, 20, 60]
+  delivery_windows: [5, 20]
+  zscore_window: 20
+  realized_vol_windows: [10, 20]
+  range_window: 252
+  cross_sectional_ranks: true
+  min_history_days: 260      # warm-up for the 200-EMA + 252d range
+
+label:
+  horizon_days: 5            # vertical barrier (t1 = t0 + 5 bars)
+  pt_atr_mult: 1.5           # upper barrier = +1.5 x ATR
+  sl_atr_mult: 1.0           # lower barrier = -1.0 x ATR
+  atr_window: 20             # reads the `atr_20` context column
+  # next_open: enter at the open of the bar AFTER the signal (honest).
+  # close:     enter at the signal bar's own close (optimistic; comparison only).
+  entry_price: next_open
+  # When one bar spans both barriers the intrabar order is unknowable from daily
+  # data. pessimistic books the stop loss (default); optimistic books the take
+  # profit and is only for sensitivity work.
+  same_bar_resolution: pessimistic
+
+validation:
+  # Walk-forward only. Random K-Fold is banned: it leaks across time.
+  train_days: 504            # ~2 years
+  test_days: 126             # ~6 months
+  # MANDATORY purge between train end and test start. It is treated as a FLOOR:
+  # a value shorter than the label horizon is widened automatically, because
+  # otherwise training labels would still be resolving inside the test block.
+  purge_gap_days: 5
+  embargo_days: 5
+
+models:
+  # A single shared hyperparameter set across every engine, on purpose: the
+  # point of the multi-engine protocol is measuring how much a conclusion
+  # depends on the implementation, which per-engine tuning would destroy.
+  # These are starting values, not recommendations.
+  n_estimators: 100
+  learning_rate: 0.05
+  max_depth: 3
+  min_samples_leaf: 20
+  l2: 1.0
+
+experiment:
+  # Column that splits sessions into regimes for the per-regime A/B test in
+  # scripts/regime_experiment.py and scripts/pbo_experiment.py. It must be a
+  # column your feature provider emits, and it should be roughly binary.
+  regime_col: "bench_above_ema200"
+
+  # Columns the signal check sweeps, and the control block each is correlated
+  # against. null = every cross-sectional rank column (xs_rank_*) the provider
+  # built, which is a sensible default because ranks are comparable across
+  # symbols while raw levels are not.
+  signal_features: null
+  control_features: null
+
+costs:
+  # MANDATORY friction on every trade. A pipeline that omits this will happily
+  # find "edges" that are smaller than the spread.
+  round_trip_cost_pct: 0.0025
+  enforce_in_backtest: true
+  # Indicative breakdown for documentation only (must sum to the value above):
+  #   STT (delivery): 0.10% buy + 0.10% sell = 0.20%
+  #   Exchange txn + SEBI + stamp + GST: ~0.01%
+  #   Slippage allowance: ~0.04%
